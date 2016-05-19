@@ -1,29 +1,36 @@
-breed [containers container]
-containers-own [
-  waiting
-]
-
-breed [cranes crane]
-cranes-own [
-  current-task
-  goal
-  load
-]
-
-;ticks: each tick is one second
+extensions [table]
 globals [
-  crane-road-xcors ; list of the x-coordinates where the crane road travels N<->S
-  crane-road-ycors ; list of the y-coordinates where the crane road travels E<->W
+  folklift-road-xcors ; list of the x-coordinates where the folklift road travels N<->S
+  folklift-road-ycors ; list of the y-coordinates where the folklift road travels E<->W
   total-wait-time ; total wait time of all trucks that have been served
   port
-  orderlist
+  comboTable
+  orders-combo-list
+  max-combo-name
+  max-combo-score
 ]
 
+breed [containers container]
+containers-own [
+  dis-to-port
+  birth-time
+  waiting
+  plan-to-load?
+  picking-distance
+]
 
-to-report set-size-based-on-list
-  let random-size-list map [random ?] read-from-string percentage-of-boxes-1-2-4
-  report item (position (max random-size-list) random-size-list) [0.25 0.5 1]
-end
+breed [folklifts folklift]
+folklifts-own [
+  current-task   ; i.e. [ (container 18) (container 1) (container 23) ]
+  joblist
+  path
+  working?
+  job-done?
+  time-counter
+  total-moving-distance
+]
+
+patches-own [f g h parent-patch]     ; a-star function variables
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -33,38 +40,204 @@ end
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 to go
-
+  if count containers with [label != ""] > 40
+  [
+    print "WARNING: TOO MANY CONTAINERS TO GO!"
+    stop
+  ]
   order-emerging
   order-waiting
 
-  ask cranes [
-    collecting-order
-    moving
-    load-unload
+  ask folklifts
+  [
+    if patch-here = port
+    [ ifelse job-done? [ picking-new-plan ] [ unload ] ]
+
+    if working?  [ move-load ]
   ]
+
   tick
 end
 
-to collecting-order
 
+; folklifts procudure
+to picking-new-plan
+;  (foreach table:keys comboTable
+;  [ let ks ?
+;    foreach ks [ if container ? = nobody [table:remove comboTable ks]]
+;  ])
+
+  if table:length comboTable > 0
+  [
+    set current-task first max-combo
+    (foreach table:keys comboTable
+    [ let ks ?
+      foreach ks [ if member? ? current-task [table:remove comboTable ks]]
+    ])
+
+    set joblist (turtle-set map [container ?] current-task)
+    let f1 min-one-of joblist [dis-to-port]
+    set joblist sort-on [distance f1] (turtle-set joblist)
+    foreach joblist [ask ? [set plan-to-load? true]]
+    set path find-container-path first joblist
+    set job-done? false
+    set working? true
+  ]
 end
 
-to moving
 
+to move-load
+  if working? and not job-done?
+  [
+    ifelse not empty? path
+    [
+      move-to first path
+      set path but-first path
+      set total-moving-distance total-moving-distance + 1
+    ]
+    [
+      if not empty? joblist
+      [ load ]
+    ]
+  ]
 end
 
-to load-unload
-
+to load
+  set time-counter time-counter + 1
+  if time-counter = load-time [
+    set time-counter 0
+    let moved-box first joblist
+    set joblist but-first joblist
+    ifelse not empty? joblist
+    [ set path find-container-path first joblist ]
+    [ set path find-path patch-here port ]
+    ask moved-box [die]
+  ]
 end
+
+to unload
+  set time-counter time-counter + 1
+  if time-counter = unload-time [
+    set time-counter 0
+    set path find-path patch-here port
+    set job-done? true
+    set working? false
+  ]
+end
+
+
+
+
+to-report max-combo
+  let combolist table:to-list comboTable  ;[[[20 21 25] 82] [[20 25 48] 64] [[20 25 123] 76] [[20 21 48 123] 81]]
+  let scoremax max map [last ?] combolist
+  report first filter [last ? = scoremax] combolist
+end
+
+
+to update-combo-score [key tset]
+  let score-reduce combo-score tset
+  table:put comboTable key score-reduce
+  if score-reduce > max-combo-score
+  [
+    set max-combo-name key
+    set max-combo-score score-reduce
+    print (word "update max combo with name: " key " and value: " score-reduce)
+  ]
+end
+
+; report the total cutting-distance of the containers asking
+; use approximation by calculate the x and y side length of the total area which covers the containers
+to-report combo-score [nameset]
+  let xrange (max [xcor] of nameset) - (min [xcor] of nameset)
+  let yrange (max [ycor] of nameset ) - (min [ycor] of nameset)
+  let dislist map [[dis-to-port] of ?] sort-on [dis-to-port] nameset
+  if length dislist = 4 [
+    report round (first dislist + item 1 dislist + (item 2 dislist) * 2 + (last dislist) * 2 - (xrange * yrange) ^ 0.5 )]
+  if length dislist = 3 [
+    report round (first dislist + item 1 dislist + (item 2 dislist) * 2 - (xrange * yrange) ^ 0.5 )]
+  if length dislist = 2 [
+    report round (first dislist + item 1 dislist - (xrange * yrange) ^ 0.5) ]
+  if length nameset < 2 or length nameset > 4 [user-message "error input list length"]
+end
+
+
+; combo-key function - input [(container 1)(container 2)] output "(container 1)(container2)"
+to-report combo-key [nameset]
+  let namelist sort nameset
+  if length namelist = 4 [report (list ([who] of first namelist) ([who] of item 1 namelist) ([who] of item 2 namelist) ([who] of last namelist))]
+  if length namelist = 3 [report (list ([who] of first namelist) ([who] of item 1 namelist) ([who] of item 2 namelist) )]
+  if length namelist = 2 [report (list ([who] of first namelist) ([who] of item 1 namelist) )]
+  if length namelist < 2 or length namelist > 4 [user-message "error input list length"]
+end
+
+
+
+
+
+
+
+
 
 to order-emerging
   if random 100 < order-arrival-rate [
     ask one-of containers with [label = ""]
     [
       scale-waiting-color
-      set waiting order-wait-time
+      set waiting 1
       set label waiting
       set label-color black
+      let l1 sort other containers with [size = 0.25 and waiting > 0 and not plan-to-load? ]
+      let l2 sort other containers with [size = 0.5 and waiting > 0 and not plan-to-load? ]
+
+      if size = 0.5 and not empty? l2
+      [
+        (foreach l2
+        [
+          if [size] of ? + size = 1
+          [
+            let key combo-key (turtle-set ? self)
+            if not table:has-key? comboTable key [ update-combo-score key (turtle-set ? self) ]
+          ]
+        ])
+      ]
+
+      if size = 0.25 and not empty? l2 and not empty? l1
+      [
+        (foreach l1
+        [
+          let q1 ?
+          (foreach l2
+          [
+            if [size] of q1 + [size] of ? + size = 1
+            [
+              let key combo-key (turtle-set q1 ? self)
+              if not table:has-key? comboTable key [ update-combo-score key (turtle-set q1 ? self) ]
+            ]
+          ])
+        ])
+      ]
+
+      while [size = 0.25 and length l1 >= 3]    ; l1 = [1 2 3 4 5]
+      [
+        let ll first l1
+        set l1 but-first l1
+        set l2 l1                             ; l1 = l2 = [2 3 4 5]
+        while [length l2 >= 2]
+        [
+          let lll first l2
+          set l2 but-first l2                 ; l3 = l2 = [3 4 5]
+          let l3 l2
+          (foreach l3
+          [
+            if ([size] of ? + [size] of lll + [size] of ll + size = 1)
+            [
+              let key combo-key (turtle-set ll lll ? self)
+              if not table:has-key? comboTable key [ update-combo-score key (turtle-set ll lll ? self) ]
+            ]
+          ])
+        ]
+      ]
     ]
   ]
 
@@ -74,92 +247,134 @@ to order-emerging
   ]
 end
 
+
+
+
+
+
+
+
 to order-waiting
   ask containers with [label != ""]
   [
-    set waiting waiting - 1
+    set waiting waiting + 1
     set label waiting
     scale-waiting-color
   ]
-  if any? containers with [label != "" and waiting <= 0]
-  [ watch one-of containers with [label != "" and waiting <= 0] stop ]
 end
+
+
+
+
 
 to scale-waiting-color
   if label != "" [set color scale-color 15 0 waiting order-wait-time ] ; scaled-red
 end
 
-to crane-working
-  ask cranes [
 
+
+
+
+
+to-report right-patch-of [thisturtle]
+  report patch ([xcor] of thisturtle + 1) [ycor] of thisturtle
+end
+
+
+
+to-report path-to-port [thispatch]
+  report find-path thispatch port
+end
+
+
+to-report find-container-path [ destination-container ]
+  report find-path patch-here right-patch-of destination-container
+end
+
+to-report find-path [ source-patch destination-patch]
+  let search-done? false
+  let search-path [ ]
+  let current-patch 0
+  let open [ ]
+  let closed [ ]
+  ; add source patch in the open list
+  set open lput source-patch open
+  ; loop until we reach the destination or the open list becomes empty
+  while [ search-done? != true ]
+  [
+    ifelse length open != 0
+    [
+      set open sort-by [ [f] of ?1 < [f] of ?2 ] open
+      set current-patch first open
+      set open but-first open
+      set closed lput current-patch closed
+      ask current-patch
+      [
+        ifelse any? neighbors4 with [ (pxcor = [pxcor] of destination-patch) and (pycor = [pycor] of destination-patch)]
+        [ set search-done? true ]
+        [
+          ask neighbors4 with [ pcolor != white and (not member? self closed) and (self != parent-patch) ]
+          [
+            if not member? self open and self != source-patch and self != destination-patch
+            [
+              set open lput self open
+              set parent-patch current-patch
+              set g [g] of parent-patch  + 1
+              set h distance destination-patch
+              set f (g + h)
+            ]
+          ]
+        ]
+      ]
+    ]
+    [ report [ ] ]
   ]
-end
-
-
-;crane functions
-
-;Gets called at every tick, makes the crane do what it needs to do.
-;An opportunistic crane will re-evaluate its goal-position goal at every tick
-;A non opportunistic crane picks a goal-position and sticks to it until it delivers the container to that truck.
-to go-crane
-
-end
-
-
-
-
-to-report path-to-truck [the-truck]
-
+  set search-path lput current-patch search-path
+  let temp first search-path
+  while [ temp != source-patch ]
+  [
+    set search-path lput [parent-patch] of temp search-path
+    set temp [parent-patch] of temp
+  ]
+  set search-path fput destination-patch search-path
+  report reverse search-path
 end
 
 
 
 
-;container functions
 
-;Tries random positions until it finds one where the container can be placed, the the container is placed there.
-to find-random-empty-position
-  move-to one-of patches with [pcolor = white and not any? turtles-here]
-end
-
-
-
-;truck functions
-;move the truck to the position where it can pick up cargo (container)
-to goto-container
-
-end
-
-
-
-
-;===========================================================
+;================================================================================================
+;================================================================================================
 ;setup
 
 to setup
   clear-all
+  set max-combo-score 0
+  set max-combo-name 0
+  set comboTable table:make
+  set orders-combo-list []
 
-  set crane-road-xcors (list 0 2 4 6 8 10 12 14 16)
-  set crane-road-ycors (list 5 15)
+  set folklift-road-xcors (list 0 2 4 6 8 10 12 14 16)
+  set folklift-road-ycors (list 5 15)
   ask patches [set pcolor white]
 
-  ;the road in which the crane travels is grey
-  ask patches with [member? pxcor crane-road-xcors][set pcolor grey]
-  ask patches with [member? pycor crane-road-ycors][set pcolor grey]
+  ;the road in which the folklift travels is grey
+  ask patches with [member? pxcor folklift-road-xcors][set pcolor grey]
+  ask patches with [member? pycor folklift-road-ycors][set pcolor grey]
   set port patch 0 5
   ask port [set pcolor 107]
 
   create-containers count patches with [pcolor = white] [ container-init ]
 
-  create-cranes num-cranes [
+  create-folklifts num-folklifts [
     set shape "arrow"
+    set size 0.8
     set heading 0
     set color orange
-    set current-task "collecting-order"  ;    moving
-                                         ;    load-unload
-
-
-    move-to one-of patches with [pycor = 0 and pcolor = grey and not any? turtles-here]
+    set working? false
+    set job-done? true
+    move-to patch 0 5
   ]
   reset-ticks
 end
@@ -167,18 +382,26 @@ end
 to container-init
     set shape "square"
     set color blue
+    set plan-to-load? false
     set size set-size-based-on-list
     move-to one-of patches with [pcolor = white and not any? turtles-here]
+    set dis-to-port length find-path patch-here port
+    ;set picking-distance length (path (patch (xcor + 1) ycor) port)
+end
+
+to-report set-size-based-on-list
+  let random-size-list map [random ?] read-from-string percentage-of-boxes-1-2-4
+  report item (position (max random-size-list) random-size-list) [0.25 0.5 1]
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
-225
-12
-645
-521
+222
+13
+561
+432
 -1
 -1
-22.8
+19.4
 1
 10
 1
@@ -189,31 +412,14 @@ GRAPHICS-WINDOW
 0
 1
 0
-17
+16
 0
-20
+19
 1
 1
 1
 ticks
 30.0
-
-BUTTON
-2
-14
-73
-47
-NIL
-setup
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
 
 BUTTON
 138
@@ -265,11 +471,11 @@ orders/100ticks
 HORIZONTAL
 
 PLOT
-659
-10
-896
-160
-Number of Trucks
+566
+15
+763
+165
+total-waiting-time
 NIL
 NIL
 0.0
@@ -280,53 +486,7 @@ true
 false
 "" ""
 PENS
-"default" 1.0 0 -16777216 true "" ""
-
-PLOT
-659
-171
-897
-321
-Number of Trucks Serviced
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -955883 true "" ""
-
-PLOT
-659
-330
-898
-480
-Average Wait Time
-Tick
-Avg. Wait Time (ticks)
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" ""
-
-CHOOSER
-7
-184
-201
-229
-crane-pick-goal-function
-crane-pick-goal-function
-"random" "longest" "closest" "closest-longest"
-0
+"default" 1.0 0 -16777216 true "" "plot sum [waiting] of containers"
 
 INPUTBOX
 16
@@ -334,7 +494,7 @@ INPUTBOX
 183
 418
 percentage-of-boxes-1-2-4
-[72 24 4]
+[60 30 10]
 1
 0
 String
@@ -344,11 +504,11 @@ SLIDER
 58
 174
 91
-num-cranes
-num-cranes
+num-folklifts
+num-folklifts
 0
 10
-1
+2
 1
 1
 NIL
@@ -363,27 +523,124 @@ order-wait-time
 order-wait-time
 0
 100
-50
+100
 1
 1
 NIL
 HORIZONTAL
 
+BUTTON
+6
+14
+72
+47
+NIL
+setup
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+MONITOR
+566
+190
+902
+235
+NIL
+max-combo-name
+17
+1
+11
+
+MONITOR
+567
+294
+902
+339
+NIL
+sort [current-task] of first sort folklifts
+17
+1
+11
+
+INPUTBOX
+79
+242
+157
+302
+unload-time
+5
+1
+0
+Number
+
+INPUTBOX
+7
+243
+76
+303
+load-time
+5
+1
+0
+Number
+
+MONITOR
+567
+347
+902
+392
+path of 1st crane
+[path] of first sort folklifts
+17
+1
+11
+
+MONITOR
+566
+245
+902
+290
+NIL
+[joblist] of first sort folklifts
+17
+1
+11
+
+PLOT
+769
+15
+969
+165
+total-moving-distance
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"lift_0" 1.0 0 -955883 true "" "plot [total-moving-distance] of first sort folklifts"
+"lift_1" 1.0 0 -13345367 true "" "if count folklifts > 1[plot [total-moving-distance] of item 1 sort folklifts]"
+
 @#$#@#$#@
 # Container Port Simulation
 
 ## WHAT IS IT?
-A simulation of a container port. We model the movement of the cranes using various utility functions to determine what is the best behavior for the crane operators. The trucks have random arrival times. More details can be found at
-
- 1. Nathan Huynh and Jose M. Vidal. [An Agent-Based Approach to Modeling Yard Cranes at Seaport Container Terminals](http://jmvidal.cse.sc.edu/papers/huynh10a.pdf). In _Proceedings of the Symposium on Theory of Modeling and Simulation_, 2010.
-
- 2. Jose M Vidal and Nathan Huynh. [Building Agent-Based Models of Seaport Container Terminals](http://jmvidal.cse.sc.edu/papers/vidal10a.pdf). In _Proceedings of 6th Workshop on Agents in Traffic and Transportation_, 2010.
+A simulation of a container warehoust. Model the movement of the folklifts using various utility functions to determine what is the best strategy for the warehouse.
 
 ## CREDITS
-Jose M Vidal and Nathan Huynh
-Jihe Gao jihe.gao@jiejiaotech.com
+inspired by Jose M Vidal and Nathan Huynh http://jmvidal.cse.sc.edu/netlogomas/port/index.html
 
-## CHANGES
+Jihe Gao jihe.gao@jiejiaotech.com
 @#$#@#$#@
 default
 true
