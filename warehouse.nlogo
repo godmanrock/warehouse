@@ -1,7 +1,7 @@
 extensions [table]
 globals [
-  folklift-road-xcors ; list of the x-coordinates where the folklift road travels N<->S
-  folklift-road-ycors ; list of the y-coordinates where the folklift road travels E<->W
+  forklift-road-xcors ; list of the x-coordinates where the forklift road travels N<->S
+  forklift-road-ycors ; list of the y-coordinates where the forklift road travels E<->W
   total-wait-time ; total wait time of all trucks that have been served
   port
   comboTable
@@ -19,8 +19,8 @@ containers-own [
   picking-distance
 ]
 
-breed [folklifts folklift]
-folklifts-own [
+breed [forklifts forklift]
+forklifts-own [
   current-task   ; i.e. [ (container 18) (container 1) (container 23) ]
   joblist
   path
@@ -48,7 +48,7 @@ to go
   order-emerging
   order-waiting
 
-  ask folklifts
+  ask forklifts
   [
     if patch-here = port
     [ ifelse job-done? [ picking-new-plan ] [ unload ] ]
@@ -60,7 +60,7 @@ to go
 end
 
 
-; folklifts procudure
+; forklifts procudure
 to picking-new-plan
 ;  (foreach table:keys comboTable
 ;  [ let ks ?
@@ -70,6 +70,7 @@ to picking-new-plan
   if table:length comboTable > 0
   [
     set current-task first max-combo
+
     (foreach table:keys comboTable
     [ let ks ?
       foreach ks [ if member? ? current-task [table:remove comboTable ks]]
@@ -111,7 +112,7 @@ to load
     ifelse not empty? joblist
     [ set path find-container-path first joblist ]
     [ set path find-path patch-here port ]
-    ask moved-box [die]
+    if moved-box != nobody [ask moved-box [die]]
   ]
 end
 
@@ -135,8 +136,8 @@ to-report max-combo
 end
 
 
-to update-combo-score [key tset]
-  let score-reduce combo-score tset
+to update-combo-score [key tset waiting-time]
+  let score-reduce combo-score tset + waiting-time
   table:put comboTable key score-reduce
   if score-reduce > max-combo-score
   [
@@ -149,6 +150,7 @@ end
 ; report the total cutting-distance of the containers asking
 ; use approximation by calculate the x and y side length of the total area which covers the containers
 to-report combo-score [nameset]
+  if count nameset < 1 or count nameset > 4 [user-message "error input list length"]
   let xrange (max [xcor] of nameset) - (min [xcor] of nameset)
   let yrange (max [ycor] of nameset ) - (min [ycor] of nameset)
   let dislist map [[dis-to-port] of ?] sort-on [dis-to-port] nameset
@@ -158,7 +160,8 @@ to-report combo-score [nameset]
     report round (first dislist + item 1 dislist + (item 2 dislist) * 2 - (xrange * yrange) ^ 0.5 )]
   if length dislist = 2 [
     report round (first dislist + item 1 dislist - (xrange * yrange) ^ 0.5) ]
-  if length nameset < 2 or length nameset > 4 [user-message "error input list length"]
+
+    report 0
 end
 
 
@@ -168,7 +171,8 @@ to-report combo-key [nameset]
   if length namelist = 4 [report (list ([who] of first namelist) ([who] of item 1 namelist) ([who] of item 2 namelist) ([who] of last namelist))]
   if length namelist = 3 [report (list ([who] of first namelist) ([who] of item 1 namelist) ([who] of item 2 namelist) )]
   if length namelist = 2 [report (list ([who] of first namelist) ([who] of item 1 namelist) )]
-  if length namelist < 2 or length namelist > 4 [user-message "error input list length"]
+  if length namelist = 1 [report (list ([who] of first namelist) ) ]
+  if length namelist < 1 or length namelist > 4 [user-message "error input list length"]
 end
 
 
@@ -187,71 +191,12 @@ to order-emerging
       set waiting 1
       set label waiting
       set label-color black
-      let l1 sort other containers with [size = 0.25 and waiting > 0 and not plan-to-load? ]
-      let l2 sort other containers with [size = 0.5 and waiting > 0 and not plan-to-load? ]
-
-      if size = 0.5 and not empty? l2
-      [
-        (foreach l2
-        [
-          if [size] of ? + size = 1
-          [
-            let key combo-key (turtle-set ? self)
-            if not table:has-key? comboTable key [ update-combo-score key (turtle-set ? self) ]
-          ]
-        ])
-      ]
-
-      if size = 0.25 and not empty? l2 and not empty? l1
-      [
-        (foreach l1
-        [
-          let q1 ?
-          (foreach l2
-          [
-            if [size] of q1 + [size] of ? + size = 1
-            [
-              let key combo-key (turtle-set q1 ? self)
-              if not table:has-key? comboTable key [ update-combo-score key (turtle-set q1 ? self) ]
-            ]
-          ])
-        ])
-      ]
-
-      while [size = 0.25 and length l1 >= 3]    ; l1 = [1 2 3 4 5]
-      [
-        let ll first l1
-        set l1 but-first l1
-        set l2 l1                             ; l1 = l2 = [2 3 4 5]
-        while [length l2 >= 2]
-        [
-          let lll first l2
-          set l2 but-first l2                 ; l3 = l2 = [3 4 5]
-          let l3 l2
-          (foreach l3
-          [
-            if ([size] of ? + [size] of lll + [size] of ll + size = 1)
-            [
-              let key combo-key (turtle-set ll lll ? self)
-              if not table:has-key? comboTable key [ update-combo-score key (turtle-set ll lll ? self) ]
-            ]
-          ])
-        ]
-      ]
+      make-order-combinations-and-update-combo-score
     ]
   ]
-
   if any? patches with [pcolor = white and not any? turtles-here]
-  [
-    create-containers 1 [ container-init ]
-  ]
+  [ create-containers 1 [ container-init ] ]
 end
-
-
-
-
-
-
 
 
 to order-waiting
@@ -261,14 +206,81 @@ to order-waiting
     set label waiting
     scale-waiting-color
   ]
+  if count containers with [waiting > order-wait-time * 0.8 and not plan-to-load?] > 1
+  [
+    ask containers with [ waiting > order-wait-time * 0.8 and not plan-to-load?]
+    [ make-order-combinations-and-update-combo-score]
+  ]
+end
+
+
+
+to make-order-combinations-and-update-combo-score
+  let l1 sort other containers with [size = 0.25 and waiting > 0 and not plan-to-load? ]
+  let l2 sort other containers with [size = 0.5 and waiting > 0 and not plan-to-load? ]
+  if size = 0.5 and not empty? l2
+  [
+    (foreach l2
+    [
+      if [size] of ? + size = 1
+      [
+        let key combo-key (turtle-set ? self)
+        if not table:has-key? comboTable key [ update-combo-score key (turtle-set ? self) sum [waiting] of (turtle-set ? self) ]
+      ]
+    ])
+  ]
+
+  if size = 0.25 and not empty? l2 and not empty? l1
+  [
+    (foreach l1
+    [
+      let q1 ?
+      (foreach l2
+      [
+        if [size] of q1 + [size] of ? + size = 1
+        [
+          let key combo-key (turtle-set q1 ? self)
+          if not table:has-key? comboTable key [ update-combo-score key (turtle-set q1 ? self) sum [waiting] of (turtle-set q1 ? self)]
+        ]
+      ])
+    ])
+  ]
+
+  while [size = 0.25 and length l1 >= 3]    ; l1 = [1 2 3 4 5]
+  [
+    let ll first l1
+    set l1 but-first l1
+    set l2 l1                             ; l1 = l2 = [2 3 4 5]
+    while [length l2 >= 2]
+    [
+      let lll first l2
+      set l2 but-first l2                 ; l3 = l2 = [3 4 5]
+      let l3 l2
+      (foreach l3
+      [
+        if ([size] of ? + [size] of lll + [size] of ll + size = 1)
+        [
+          let key combo-key (turtle-set ll lll ? self)
+          if not table:has-key? comboTable key [ update-combo-score key (turtle-set ll lll ? self) sum[waiting] of (turtle-set ll lll ? self)]
+        ]
+      ])
+    ]
+  ]
+
+  if size = 1 [
+    update-combo-score (combo-key (turtle-set self)) (turtle-set self) waiting
+  ]
 end
 
 
 
 
 
+
+
+
 to scale-waiting-color
-  if label != "" [set color scale-color 15 0 waiting order-wait-time ] ; scaled-red
+  if label != "" [set color scale-color 15 0 waiting order-wait-time * 2 ] ; scaled-red
 end
 
 
@@ -355,23 +367,22 @@ to setup
   set comboTable table:make
   set orders-combo-list []
 
-  set folklift-road-xcors (list 0 2 4 6 8 10 12 14 16)
-  set folklift-road-ycors (list 5 15)
+  set forklift-road-xcors (list 0 2 4 6 8 10 12 14 16)
+  set forklift-road-ycors (list 5 15)
   ask patches [set pcolor white]
 
-  ;the road in which the folklift travels is grey
-  ask patches with [member? pxcor folklift-road-xcors][set pcolor grey]
-  ask patches with [member? pycor folklift-road-ycors][set pcolor grey]
+  ;the road in which the forklift travels is grey
+  ask patches with [member? pxcor forklift-road-xcors][set pcolor grey]
+  ask patches with [member? pycor forklift-road-ycors][set pcolor grey]
   set port patch 0 5
   ask port [set pcolor 107]
 
   create-containers count patches with [pcolor = white] [ container-init ]
 
-  create-folklifts num-folklifts [
+  create-forklifts num-forklifts [
     set shape "arrow"
     set size 0.8
     set heading 0
-    set color orange
     set working? false
     set job-done? true
     move-to patch 0 5
@@ -397,8 +408,8 @@ end
 GRAPHICS-WINDOW
 222
 13
-561
-432
+523
+412
 -1
 -1
 19.4
@@ -412,9 +423,9 @@ GRAPHICS-WINDOW
 0
 1
 0
-16
+14
 0
-19
+18
 1
 1
 1
@@ -494,7 +505,7 @@ INPUTBOX
 183
 418
 percentage-of-boxes-1-2-4
-[60 30 10]
+[40 30 30]
 1
 0
 String
@@ -504,8 +515,8 @@ SLIDER
 58
 174
 91
-num-folklifts
-num-folklifts
+num-forklifts
+num-forklifts
 0
 10
 2
@@ -563,7 +574,7 @@ MONITOR
 902
 339
 NIL
-sort [current-task] of first sort folklifts
+sort [current-task] of first sort forklifts
 17
 1
 11
@@ -595,8 +606,8 @@ MONITOR
 347
 902
 392
-path of 1st crane
-[path] of first sort folklifts
+path of 1st forklift
+[path] of first sort forklifts
 17
 1
 11
@@ -607,7 +618,7 @@ MONITOR
 902
 290
 NIL
-[joblist] of first sort folklifts
+[joblist] of first sort forklifts
 17
 1
 11
@@ -616,6 +627,25 @@ PLOT
 769
 15
 969
+165
+moving-distance
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"lift_0" 1.0 0 -955883 true "" "plot [total-moving-distance] of first sort forklifts"
+"lift_1" 1.0 0 -13345367 true "" "if count forklifts > 1[plot [total-moving-distance] of item 1 sort forklifts]"
+
+PLOT
+996
+15
+1196
 165
 total-moving-distance
 NIL
@@ -628,8 +658,59 @@ true
 false
 "" ""
 PENS
-"lift_0" 1.0 0 -955883 true "" "plot [total-moving-distance] of first sort folklifts"
-"lift_1" 1.0 0 -13345367 true "" "if count folklifts > 1[plot [total-moving-distance] of item 1 sort folklifts]"
+"default" 1.0 0 -16777216 true "" "plot sum [total-moving-distance] of forklifts"
+
+PLOT
+928
+198
+1128
+348
+total-waiting-orders
+NIL
+NIL
+0.0
+10.0
+0.0
+10.0
+true
+false
+"" ""
+PENS
+"default" 1.0 0 -16777216 true "" "plot count containers with [waiting > 0]"
+
+BUTTON
+668
+397
+768
+430
+draw-trace
+ask forklifts [pd]
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+BUTTON
+785
+399
+903
+432
+NIL
+clear-drawing
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
 
 @#$#@#$#@
 # Container Port Simulation
